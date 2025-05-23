@@ -45,6 +45,11 @@ jobs:
           docker run --rm -d --name test-pg \
             -e POSTGRES_PASSWORD=test \
             -e POSTGRES_DB=test \
+            -e POSTGRES_USER=postgres \
+            -e PGUSER=postgres \
+            -e PGPASSWORD=test \
+            -e SCOPE=ci \
+            -e PGVERSION=17 \
             test-image:latest
           
           # Wait for PostgreSQL to be ready

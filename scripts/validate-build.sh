@@ -21,6 +21,10 @@ docker run -d --name "$CONTAINER_NAME" \
   -e POSTGRES_PASSWORD=testpass \
   -e POSTGRES_DB=postgres \
   -e POSTGRES_USER=postgres \
+  -e PGUSER=postgres \
+  -e PGPASSWORD=testpass \
+  -e SCOPE=ci \
+  -e PGVERSION=17 \
   "$IMAGE_NAME"
 
 # Wait for readiness WITHOUT ERR TRAP

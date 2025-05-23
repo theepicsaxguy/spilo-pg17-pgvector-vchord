@@ -40,6 +40,11 @@ jobs:
           docker run --rm -d --name test-postgres \
             -e POSTGRES_PASSWORD=testpass \
             -e POSTGRES_DB=testdb \
+            -e POSTGRES_USER=postgres \
+            -e PGUSER=postgres \
+            -e PGPASSWORD=testpass \
+            -e SCOPE=ci \
+            -e PGVERSION=17 \
             -p 5432:5432 \
             test-spilo:latest
 
