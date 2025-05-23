@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.0](https://github.com/theepicsaxguy/spilo-pg17-pgvector-vchord/compare/v1.2.0...v1.3.0) (2025-05-23)
+
+
+### Features
+
+* **docker:** add Dockerfile, docker-compose, and CI workflows for PostgreSQL with vector extensions ([#14](https://github.com/theepicsaxguy/spilo-pg17-pgvector-vchord/issues/14)) ([e6c74ea](https://github.com/theepicsaxguy/spilo-pg17-pgvector-vchord/commit/e6c74ea2fab0fbda14435dc6fab81d7520fdd6fa))
+* **docker:** enhance Docker workflow and add validation script for pgvector and vchord extensions ([#16](https://github.com/theepicsaxguy/spilo-pg17-pgvector-vchord/issues/16)) ([a466b71](https://github.com/theepicsaxguy/spilo-pg17-pgvector-vchord/commit/a466b7192a931817fa9b93ce9f551a3bf0aefb31))
+
 ## [1.2.0](https://github.com/theepicsaxguy/spilo-pg17-pgvector-vchord/compare/v1.1.0...v1.2.0) (2025-05-23)
 
 
