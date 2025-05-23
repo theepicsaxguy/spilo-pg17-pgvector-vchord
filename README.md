@@ -4,6 +4,122 @@
 [![Docker Pulls](https://img.shields.io/docker/pulls/theepicsaxguy/spilo-pgvector-vectorchord)](https://github.com/theepicsaxguy/spilo-pg17-pgvector-vchord/pkgs/container/spilo-pg17-pgvector-vchord)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+A production-ready PostgreSQL 17 Docker image built on [Spilo](https://github.com/zalando/spilo) with **pgvector** and **VectorChord** extensions pre-installed and ready to use.
+
+## 🎯 Core Features
+
+This image provides **both pgvector and VectorChord** extensions, fully tested and ready for vector similarity search:
+
+- ✅ **pgvector** - Industry standard vector similarity search
+- ✅ **VectorChord** - High-performance vector indexing 
+- ✅ **Multi-architecture** - Supports both AMD64 and ARM64
+- ✅ **Production Ready** - Built on battle-tested Spilo
+- ✅ **Kubernetes Native** - Works with Postgres operators
+
+## 🐳 Quick Start
+
+### Verify Extensions Work
+
+```bash
+# Start the container
+docker run -d --name vector-db \
+  -e POSTGRES_PASSWORD=mypassword \
+  -p 5432:5432 \
+  ghcr.io/theepicsaxguy/spilo-pg17-pgvector-vchord:latest
+
+# Test both extensions
+psql -h localhost -U postgres -c "
+  CREATE EXTENSION pgvector;
+  CREATE EXTENSION vchord;
+  
+  -- Create test table
+  CREATE TABLE vectors (id serial, embedding vector(3));
+  INSERT INTO vectors (embedding) VALUES ('[1,2,3]'), ('[4,5,6]');
+  
+  -- Test similarity search
+  SELECT * FROM vectors ORDER BY embedding <-> '[1,2,3]' LIMIT 1;
+  
+  -- Create VectorChord index
+  CREATE INDEX ON vectors USING vchord (embedding vector_l2_ops);
+"
+```
+
+### For Development
+
+```bash
+git clone https://github.com/theepicsaxguy/spilo-pg17-pgvector-vchord.git
+cd spilo-pg17-pgvector-vchord
+docker-compose up -d  # Includes pgAdmin and monitoring
+```
+
+## 🚀 Production Usage
+
+### Zalando Postgres Operator
+
+```yaml
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: vector-database
+spec:
+  instances: 3
+  dockerImage: ghcr.io/theepicsaxguy/spilo-pg17-pgvector-vchord:latest
+  
+  postgresql:
+    version: "17"
+    parameters:
+      shared_preload_libraries: "vchord"  # Enable VectorChord
+      max_connections: "200"
+      shared_buffers: "256MB"
+      
+  bootstrap:
+    initdb:
+      postInitSQL:
+        - "CREATE EXTENSION IF NOT EXISTS pgvector;"
+        - "CREATE EXTENSION IF NOT EXISTS vchord;"
+```
+
+### CloudNativePG
+
+```yaml
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: vector-cluster
+spec:
+  instances: 3
+  imageName: ghcr.io/theepicsaxguy/spilo-pg17-pgvector-vchord:latest
+  
+  bootstrap:
+    initdb:
+      postInitSQL:
+        - "CREATE EXTENSION pgvector;"
+        - "CREATE EXTENSION vchord;"
+```
+
+## 📚 Extension Usage Examples
+
+### Basic Vector Operations
+
+```sql
+-- Enable both extensions
+CREATE EXTENSION pgvector;
+CREATE EXTENSION vchord;
+
+-- Create table with vector column
+CREATE TABLE documents (
+    id SERIAL PRIMARY KEY,
+    title TEXT,
+    embedding vector(384)  -- 384-dimensional vectors
+);
+
+-- Insert sample data
+INSERT INTO documents (title, embedding) VALUES # Spilo PostgreSQL 17 with pgvector & VectorChord
+
+[![Build Status](https://github.com/theepicsaxguy/spilo-pg17-pgvector-vchord/workflows/Build%20and%20Push%20Docker%20Image/badge.svg)](https://github.com/theepicsaxguy/spilo-pg17-pgvector-vchord/actions)
+[![Docker Pulls](https://img.shields.io/docker/pulls/theepicsaxguy/spilo-pgvector-vectorchord)](https://github.com/theepicsaxguy/spilo-pg17-pgvector-vchord/pkgs/container/spilo-pg17-pgvector-vchord)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 A production-ready PostgreSQL 17 Docker image built on [Spilo](https://github.com/zalando/spilo) with vector similarity search capabilities, optimized for use with the Zalando Postgres Operator and other Kubernetes PostgreSQL operators.
 
 ## Features

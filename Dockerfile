@@ -1,31 +1,49 @@
-FROM ghcr.io/zalando/spilo-17:4.0-p2 as base
+FROM ghcr.io/zalando/spilo-17:4.0-p2 AS base
 
 # Build arguments for version pinning
 ARG VCHORD_VERSION=0.3.0
 ARG PGVECTOR_VERSION=0.7.0
+ARG TARGETARCH
 
 USER root
 
-# Add PostgreSQL PGDG repo and install pgvector and vchord
+# Add PostgreSQL PGDG repo and install extensions
 RUN apt-get update && \
     apt-get install -y --no-install-recommends --no-install-suggests \
         wget \
         ca-certificates \
         gnupg \
-        lsb-release && \
+        lsb-release \
+        curl && \
     # Add PostgreSQL repository
     echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list && \
     wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - && \
     apt-get update && \
-    # Install pgvector
+    # Install pgvector (available for both amd64 and arm64)
     apt-get install -y --no-install-recommends --no-install-suggests \
         postgresql-17-pgvector && \
-    # Install VectorChord
-    wget -O /tmp/vchord.deb "https://github.com/tensorchord/VectorChord/releases/download/${VCHORD_VERSION}/postgresql-17-vchord_${VCHORD_VERSION}-1_amd64.deb" && \
-    dpkg -i /tmp/vchord.deb && \
+    # Install VectorChord based on architecture
+    if [ "$TARGETARCH" = "amd64" ]; then \
+        wget -O /tmp/vchord.deb "https://github.com/tensorchord/VectorChord/releases/download/${VCHORD_VERSION}/postgresql-17-vchord_${VCHORD_VERSION}-1_amd64.deb" && \
+        dpkg -i /tmp/vchord.deb && \
+        rm /tmp/vchord.deb; \
+    elif [ "$TARGETARCH" = "arm64" ]; then \
+        # VectorChord doesn't provide arm64 packages yet, so we'll build from source
+        apt-get install -y --no-install-recommends --no-install-suggests \
+            build-essential \
+            cmake \
+            postgresql-server-dev-17 \
+            git && \
+        cd /tmp && \
+        git clone --depth 1 --branch v${VCHORD_VERSION} https://github.com/tensorchord/VectorChord.git && \
+        cd VectorChord && \
+        make install && \
+        cd / && \
+        rm -rf /tmp/VectorChord && \
+        apt-get purge -y build-essential cmake git; \
+    fi && \
     # Cleanup
-    rm /tmp/vchord.deb && \
-    apt-get purge -y wget gnupg && \
+    apt-get purge -y wget gnupg curl && \
     apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/* && \
     rm -rf /tmp/* /var/tmp/*
