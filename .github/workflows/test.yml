@@ -1,0 +1,102 @@
+name: Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Lint Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: warning
+
+  integration-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build test image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: test-spilo:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start PostgreSQL container
+        run: |
+          docker run --rm -d --name test-postgres \
+            -e POSTGRES_PASSWORD=testpass \
+            -e POSTGRES_DB=testdb \
+            -p 5432:5432 \
+            test-spilo:latest
+
+      - name: Wait for PostgreSQL to be ready
+        run: |
+          timeout 60s bash -c 'until docker exec test-postgres pg_isready -U postgres; do sleep 2; done'
+
+      - name: Test extensions installation
+        run: |
+          # Test pgvector
+          docker exec test-postgres psql -U postgres -d testdb -c "CREATE EXTENSION IF NOT EXISTS pgvector;"
+          docker exec test-postgres psql -U postgres -d testdb -c "SELECT extname, extversion FROM pg_extension WHERE extname = 'pgvector';"
+          
+          # Test vchord
+          docker exec test-postgres psql -U postgres -d testdb -c "CREATE EXTENSION IF NOT EXISTS vchord;"
+          docker exec test-postgres psql -U postgres -d testdb -c "SELECT extname, extversion FROM pg_extension WHERE extname = 'vchord';"
+
+      - name: Test vector operations
+        run: |
+          docker exec test-postgres psql -U postgres -d testdb -c "
+            -- Test pgvector functionality
+            CREATE TABLE items (id bigserial PRIMARY KEY, embedding vector(3));
+            INSERT INTO items (embedding) VALUES ('[1,2,3]'), ('[4,5,6]'), ('[7,8,9]');
+            
+            -- Test similarity search
+            SELECT id, embedding, embedding <-> '[2,3,4]' AS distance 
+            FROM items 
+            ORDER BY embedding <-> '[2,3,4]' 
+            LIMIT 3;
+            
+            -- Test vchord index
+            CREATE INDEX ON items USING vchord (embedding vector_l2_ops);
+            
+            -- Verify index was created
+            SELECT schemaname, tablename, indexname FROM pg_indexes WHERE tablename = 'items';
+          "
+
+      - name: Test performance with larger dataset
+        run: |
+          docker exec test-postgres psql -U postgres -d testdb -c "
+            -- Create a larger test dataset
+            CREATE TABLE large_vectors (id bigserial PRIMARY KEY, vec vector(128));
+            INSERT INTO large_vectors (vec) 
+            SELECT array_to_string(array(select random()::text from generate_series(1,128)), ',')::vector(128)
+            FROM generate_series(1, 1000);
+            
+            -- Create vchord index
+            CREATE INDEX large_vectors_vchord_idx ON large_vectors USING vchord (vec vector_l2_ops);
+            
+            -- Test query performance
+            EXPLAIN (ANALYZE, BUFFERS) 
+            SELECT id FROM large_vectors 
+            ORDER BY vec <-> (select vec from large_vectors limit 1) 
+            LIMIT 10;
+          "
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker stop test-postgres || true
