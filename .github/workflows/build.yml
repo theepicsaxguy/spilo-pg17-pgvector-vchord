@@ -77,18 +77,18 @@ jobs:
           context: ./spilo-upstream/postgres-appliance
           file: ./spilo-upstream/postgres-appliance/Dockerfile
           platforms: linux/amd64,linux/arm64
-          push: true # Always push this base image for PRs and main pushes
-          tags: | # Tags for the pushed intermediate base image
-            ${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.base_tags.outputs.PUSH_TAG }}
+          push: true # Push this base image
+          tags: ${{ env.REGISTRY }}/${{ env.SPILO_BASE_IMAGE_NAME }}:${{ steps.base_image_tag.outputs.TAG }}
           build-args: |
             PGVERSION=17
-            DEB_PG_SUPPORTED_VERSIONS=17
-          cache-from: |
-            type=gha,scope=spilo-base-${{ github.ref_name }}
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.base_tags.outputs.CACHE_TAG }}
+            DEB_PG_SUPPORTED_VERSIONS="17"
+          cache-from: | # Add multiple cache sources
+            type=gha,scope=${{ env.SPILO_BASE_IMAGE_NAME }}-${{ github.ref_name }}
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.SPILO_BASE_IMAGE_NAME }}:${{ steps.base_tags.outputs.CACHE_TAG }}
+            type=registry,ref=ghcr.io/zalando/spilo-17:4.0-p2 # <-- USE OFFICIAL RELEASE AS CACHE SOURCE
           cache-to: |
-            type=gha,mode=max,scope=spilo-base-${{ github.ref_name }}
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.base_tags.outputs.CACHE_TAG }},mode=max
+            type=gha,mode=max,scope=${{ env.SPILO_BASE_IMAGE_NAME }}-${{ github.ref_name }}
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.SPILO_BASE_IMAGE_NAME }}:${{ steps.base_tags.outputs.CACHE_TAG }},mode=max
 
       - name: Extract metadata for Final Image
         id: final_meta
