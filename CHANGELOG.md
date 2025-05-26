@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.1 (2025-05-26)
+
+## What's Changed
+* chore: remove security scan job and update asset upload step by @theepicsaxguy in https://github.com/theepicsaxguy/spilo-pg17-pgvector-vchord/pull/23
+* Update changelog type to GitHub format by @theepicsaxguy in https://github.com/theepicsaxguy/spilo-pg17-pgvector-vchord/pull/24
+
+
+**Full Changelog**: https://github.com/theepicsaxguy/spilo-pg17-pgvector-vchord/compare/v1.0.0...v1.0.1
+
 ## [1.0.0](https://github.com/theepicsaxguy/spilo-pg17-pgvector-vchord/compare/v1.0.0...v1.0.0) (2025-05-26)
 
 
