@@ -5,25 +5,21 @@ on:
   push:
     branches:
       - main
-    paths: # Only trigger on relevant changes for 'main' pushes
+    paths:
       - 'spilo-upstream/**'
       - 'Dockerfile'
       - '.github/workflows/build.yml'
-      - '.github/workflows/release-please.yml' # If release process might affect base build
+      - '.github/workflows/release-please.yml'
       - '.github/workflows/update-upstream.yml'
   pull_request:
-    paths: # Always build for PRs if relevant files change
+    paths:
       - 'spilo-upstream/**'
       - 'Dockerfile'
 
 env:
   REGISTRY: ghcr.io
-  # Your final image name
   FINAL_IMAGE_NAME: ${{ github.repository }}
-  # Name for the intermediate Spilo base image pushed to registry
-  SPILO_BASE_REGISTRY_IMAGE_NAME: ${{ github.repository_owner }}/spilo-base-pg17 # e.g., theepicsaxguy/spilo-base-pg17
-  # Local tag for buildx context during the two-stage build within this job
-  TEMP_SPILO_BASE_LOCAL_TAG: spilo-base-temp-local:latest
+  SPILO_BASE_REGISTRY_IMAGE_NAME: ${{ github.repository_owner }}/spilo-base-pg17 # Corrected name
 
 permissions:
   contents: read
@@ -31,7 +27,7 @@ permissions:
   security-events: write
 
 jobs:
-  build_and_push:
+  build_and_push: # Renamed from build_and_push_base_and_final for consistency
     name: Build and Push Development Images
     runs-on: ubuntu-latest
     steps:
@@ -41,8 +37,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          submodules: recursive # Changed from true, recursive is more robust
-          fetch-depth: 0 # Needed for reliable submodule state and potential diffs if used
+          submodules: recursive
+          fetch-depth: 0
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -58,17 +54,14 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Determine Tags for Pushed Base Image
-        id: base_tags
+        id: base_tags # Correct ID
         run: |
-          # For PRs, tag with pr-number. For main, tag with sha.
-          # This pushed base image is what release-please can reuse.
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             echo "PUSH_TAG=pr-${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
           else # push to main
             echo "PUSH_TAG=sha-${{ github.sha }}" >> $GITHUB_OUTPUT
           fi
-          # Common cache tag for the registry cache, can be 'latest' or branch-specific
-          echo "CACHE_TAG=latest" >> $GITHUB_OUTPUT # Or branch-${{ github.ref_name }}
+          echo "CACHE_TAG=latest" >> $GITHUB_OUTPUT
 
       # Step 1: Build AND PUSH Spilo Base Image from Source
       - name: Build and Push Spilo Base Image (Intermediate)
@@ -77,18 +70,18 @@ jobs:
           context: ./spilo-upstream/postgres-appliance
           file: ./spilo-upstream/postgres-appliance/Dockerfile
           platforms: linux/amd64,linux/arm64
-          push: true # Push this base image
-          tags: ${{ env.REGISTRY }}/${{ env.SPILO_BASE_IMAGE_NAME }}:${{ steps.base_image_tag.outputs.TAG }}
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.base_tags.outputs.PUSH_TAG }} # Corrected variable and step ID
           build-args: |
             PGVERSION=17
-            DEB_PG_SUPPORTED_VERSIONS="17"
-          cache-from: | # Add multiple cache sources
-            type=gha,scope=${{ env.SPILO_BASE_IMAGE_NAME }}-${{ github.ref_name }}
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.SPILO_BASE_IMAGE_NAME }}:${{ steps.base_tags.outputs.CACHE_TAG }}
-            type=registry,ref=ghcr.io/zalando/spilo-17:4.0-p2 # <-- USE OFFICIAL RELEASE AS CACHE SOURCE
+            DEB_PG_SUPPORTED_VERSIONS=17 # Corrected from "17" to 17 for build-arg
+          cache-from: |
+            type=gha,scope=${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}-${{ github.ref_name }} # Corrected variable
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.base_tags.outputs.CACHE_TAG }} # Corrected variable and step ID
+            type=registry,ref=ghcr.io/zalando/spilo-17:4.0-p2
           cache-to: |
-            type=gha,mode=max,scope=${{ env.SPILO_BASE_IMAGE_NAME }}-${{ github.ref_name }}
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.SPILO_BASE_IMAGE_NAME }}:${{ steps.base_tags.outputs.CACHE_TAG }},mode=max
+            type=gha,mode=max,scope=${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}-${{ github.ref_name }} # Corrected variable
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.base_tags.outputs.CACHE_TAG }},mode=max # Corrected variable and step ID
 
       - name: Extract metadata for Final Image
         id: final_meta
@@ -110,14 +103,20 @@ jobs:
           push: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
           tags: ${{ steps.final_meta.outputs.tags }}
           labels: ${{ steps.final_meta.outputs.labels }}
-          build-args: | # Tell your Dockerfile to use the base image we just pushed
-            SPILO_BASE_IMAGE_TAG=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.base_tags.outputs.PUSH_TAG }}
-          cache-from: type=gha # GHA cache for the final image layers
+          build-args: |
+            SPILO_BASE_IMAGE_TAG=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.base_tags.outputs.PUSH_TAG }} # Corrected step ID
+          cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Record End Time and Duration
-        if: always() # Run even if previous steps fail to see how long it took
+        if: always()
         run: |
           BUILD_END_TIME=$(date +%s)
-          DURATION=$((BUILD_END_TIME - BUILD_START_TIME))
-          echo "Total build and push duration: ${DURATION} seconds."
+          # Ensure BUILD_START_TIME was actually set if the job started but first step failed
+          # However, GITHUB_ENV variables persist for the job.
+          if [[ -n "${{ env.BUILD_START_TIME }}" ]]; then
+            DURATION=$((BUILD_END_TIME - BUILD_START_TIME))
+            echo "Total build and push duration: ${DURATION} seconds."
+          else
+            echo "BUILD_START_TIME was not set. Cannot calculate duration."
+          fi
