@@ -1,3 +1,4 @@
+# .github/workflows/release-please.yml
 name: release-please
 
 on:
@@ -10,7 +11,7 @@ permissions:
   pull-requests: write
   id-token: write
   issues: write
-  packages: write  # Added for Docker registry access
+  packages: write
 
 jobs:
   release-please:
@@ -22,6 +23,10 @@ jobs:
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
+      # It's critical that release-please makes the SHA of the release commit available
+      # Often it's part of steps.release.outputs. If not, we need to fetch it.
+      # For example, if it creates a tag, the tag points to a commit.
+      # Let's assume for now we get it in the next job via `git rev-parse HEAD` after checkout.
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
@@ -29,58 +34,85 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
 
-  # Build and push Docker image when a release is created
   build-and-push:
+    name: Build and Push Release Image
     runs-on: ubuntu-latest
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created }}
     env:
       REGISTRY: ghcr.io
-      IMAGE_NAME: ${{ github.repository }}
+      FINAL_IMAGE_NAME: ${{ github.repository }}
+      # This is the name of the Spilo base image that `build.yml` pushes
+      SPILO_BASE_REGISTRY_IMAGE_NAME: ${{ github.repository_owner }}/spilo-base-pg17
+
     steps:
-      - name: Checkout code
+      - name: Checkout code (at release tag)
         uses: actions/checkout@v4
-        
+        with:
+          # No need for submodules here if we are NOT rebuilding the base from source
+          # We only need the Dockerfile and context for the final image.
+          # However, if your Dockerfile context *does* require submodule files for some other reason, keep submodules: true.
+          # For simplicity, let's assume it's not strictly needed for the *final* build if base is pre-built.
+          # submodules: true 
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Get commit SHA for the release tag
+        id: get_sha
+        # This determines the SHA that `build.yml` would have used to tag the base image
+        run: echo "RELEASE_COMMIT_SHA=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
-        
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-        
+
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-          
-      - name: Extract metadata
+
+      # <<< NO Spilo base image build step here >>>
+      # We will use the one pushed by build.yml, tagged with the release commit SHA
+
+      - name: Extract metadata for Final Release Image
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ env.FINAL_IMAGE_NAME }}
           tags: |
             type=semver,pattern={{version}},value=${{ needs.release-please.outputs.tag_name }}
             type=semver,pattern={{major}}.{{minor}},value=${{ needs.release-please.outputs.tag_name }}
             type=semver,pattern={{major}},value=${{ needs.release-please.outputs.tag_name }}
             type=raw,value=latest
-            
-      - name: Build and push Docker image
+
+      - name: Build and Push Final Release Docker Image
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: | 
+            SPILO_BASE_IMAGE_TAG=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:sha-${{ steps.get_sha.outputs.RELEASE_COMMIT_SHA }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Upload assets
+
+      - name: Create image tags list for release asset
+        run: |
+          echo "Docker Images Pushed:" > image-tags.txt
+          echo "${{ steps.meta.outputs.tags }}" | tr ',' '\n' >> image-tags.txt
+          echo "" >> image-tags.txt
+          echo "Primary tag for this release: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.release-please.outputs.tag_name }}" >> image-tags.txt
+
+      - name: Upload image tags as release asset
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.release-please.outputs.tag_name }}
-          files: |
-            dist/myapp.deb
-            image-tags.txt
+          files: image-tags.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

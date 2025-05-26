@@ -1,0 +1,119 @@
+# .github/workflows/build.yml
+name: Build Docker Image (PR & Main Push)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'spilo-upstream/**'
+      - 'Dockerfile'
+      - '.github/workflows/build.yml'
+      - '.github/workflows/release-please.yml'
+      - '.github/workflows/update-upstream.yml'
+  pull_request:
+    paths:
+      - 'spilo-upstream/**'
+      - 'Dockerfile'
+
+env:
+  REGISTRY: ghcr.io
+  FINAL_IMAGE_NAME: ${{ github.repository }}
+  SPILO_BASE_REGISTRY_IMAGE_NAME: ${{ github.repository_owner }}/spilo-base-pg17
+
+permissions:
+  contents: read
+  packages: write
+  security-events: write
+
+jobs:
+  build_and_push:
+    name: Build and Push Development Images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record Start Time
+        run: echo "BUILD_START_TIME=$(date +%s)" >> $GITHUB_ENV
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine Tags for Pushed Base Image
+        id: base_tags
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "PUSH_TAG=pr-${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          else
+            echo "PUSH_TAG=sha-${{ github.sha }}" >> $GITHUB_OUTPUT
+          fi
+          echo "CACHE_TAG=latest" >> $GITHUB_OUTPUT
+
+      - name: Build and Push Spilo Base Image (Intermediate)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./spilo-upstream/postgres-appliance
+          file: ./spilo-upstream/postgres-appliance/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.base_tags.outputs.PUSH_TAG }}
+          build-args: |
+            PGVERSION=17
+            DEB_PG_SUPPORTED_VERSIONS=17
+          cache-from: |
+            type=gha,scope=${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}-${{ github.ref_name }}
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.base_tags.outputs.CACHE_TAG }}
+            type=registry,ref=ghcr.io/zalando/spilo-17:4.0-p2
+          cache-to: |
+            type=gha,mode=max,scope=${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}-${{ github.ref_name }}
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.base_tags.outputs.CACHE_TAG }},mode=max
+
+      - name: Extract metadata for Final Image
+        id: final_meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.FINAL_IMAGE_NAME }}
+          tags: |
+            type=raw,value=pr-${{ github.event.pull_request.number }},enable=${{ github.event_name == 'pull_request' }}
+            type=sha,enable=${{ github.event_name == 'pull_request' }}
+            type=sha,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+      # Step 2: Build and Push Final Docker Image using the PUSHED Spilo base
+      - name: Build and Push Final Docker Image (with vchord)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+          tags: ${{ steps.final_meta.outputs.tags }}
+          labels: ${{ steps.final_meta.outputs.labels }}
+          build-args: |
+            SPILO_BASE_IMAGE_TAG=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.base_tags.outputs.PUSH_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Record End Time and Duration
+        if: always()
+        run: |
+          BUILD_END_TIME=$(date +%s)
+          if [[ -n "${{ env.BUILD_START_TIME }}" ]]; then
+            DURATION=$((BUILD_END_TIME - BUILD_START_TIME))
+            echo "Total build and push duration: ${DURATION} seconds."
+          else
+            echo "BUILD_START_TIME was not set. Cannot calculate duration."
+          fi

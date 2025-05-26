@@ -1,0 +1,66 @@
+name: Update Spilo Upstream Submodule
+  
+on:
+  schedule:
+    - cron: '* 0 * * *' 
+  workflow_dispatch: # Allow manual triggering for testing
+  
+permissions:
+  contents: write # Needed for git operations
+  pull-requests: write # Needed to create PRs
+  
+jobs:
+  update-submodule:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: true # Fetch the submodule content
+          fetch-depth: 0 # Fetch all history for git operations
+          token: ${{ secrets.GITHUB_TOKEN }} # Use GITHUB_TOKEN for write permissions
+  
+      - name: Configure Git
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email github-actions[bot]@users.noreply.github.com
+  
+      - name: Update Spilo Submodule and Create PR (if changed)
+        id: submodule_update
+        run: |
+          git submodule update --init --recursive --remote # --remote fetches latest from upstream
+          
+          # Check if there are any actual changes to commit
+          if [[ -n "$(git status --porcelain spilo-upstream)" ]]; then
+            echo "Submodule spilo-upstream has updates. Preparing PR..."
+            
+            # Create a unique branch name
+            BRANCH_NAME="update-spilo-upstream-$(date +"%Y%m%d-%H%M%S")"
+            
+            # Create and switch to a new branch
+            git checkout -b "$BRANCH_NAME"
+            
+            # Stage and commit changes
+            git add spilo-upstream
+            git commit -m "fix(spilo): update upstream Spilo base [skip ci]"
+            
+            # Push the new branch
+            git push origin "$BRANCH_NAME"
+            
+            # Create a Pull Request
+            gh pr create \
+              --base main \
+              --head "$BRANCH_NAME" \
+              --title "Update Spilo Upstream Submodule" \
+              --body "Automated update of Spilo upstream submodule.
+
+            - Upstream changes detected and automatically prepared
+            - Please review and merge if appropriate"
+            
+            echo "submodule_changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "No updates to spilo-upstream submodule."
+            echo "submodule_changed=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
