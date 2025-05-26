@@ -78,7 +78,7 @@ jobs:
           tags: ${{ env.TEMP_SPILO_BASE_TAG }} # Use the locally defined temp tag
           build-args: |
             PGVERSION=17
-            DEB_PG_SUPPORTED_VERSIONS="17"
+            DEB_PG_SUPPORTED_VERSIONS=17
           # Cache this release-specific base build
           outputs: type=cacheonly,dest=spilo-base-release-cache-${{ needs.release-please.outputs.tag_name }}
           cache-from: type=cacheonly,src=spilo-base-release-cache-${{ needs.release-please.outputs.tag_name }}
