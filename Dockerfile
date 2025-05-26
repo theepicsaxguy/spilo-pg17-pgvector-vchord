@@ -1,4 +1,7 @@
-FROM ghcr.io/zalando/spilo-17:4.0-p2
+# theepicsaxguy-spilo-pg17-pgvector-vchord/Dockerfile
+# This base image will be built LOCALLY by the GitHub Action workflows
+# from the spilo-upstream submodule. It won't be pushed to a registry.
+FROM spilo-base-temp:latest
 ARG VCHORD_VERSION=0.4.1
 ARG TARGETARCH
 
