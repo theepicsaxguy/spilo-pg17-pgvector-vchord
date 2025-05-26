@@ -23,9 +23,10 @@ jobs:
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
-      # It's good practice to output the commit SHA for the release
-      # This might require an extra step if release-please doesn't output it directly
-      # commit_sha: ${{ steps.release.outputs.sha }} # Or fetch it later
+      # It's critical that release-please makes the SHA of the release commit available
+      # Often it's part of steps.release.outputs. If not, we need to fetch it.
+      # For example, if it creates a tag, the tag points to a commit.
+      # Let's assume for now we get it in the next job via `git rev-parse HEAD` after checkout.
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
@@ -34,24 +35,30 @@ jobs:
           config-file: release-please-config.json
 
   build-and-push:
+    name: Build and Push Release Image
     runs-on: ubuntu-latest
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created }}
-    env: # <--- Add TEMP_SPILO_BASE_TAG here
+    env:
       REGISTRY: ghcr.io
-      IMAGE_NAME: ${{ github.repository }}
-      SPILO_BASE_IMAGE_NAME: ${{ github.repository_owner }}/spilo-base-pg17 # For pushed base image
-      TEMP_SPILO_BASE_TAG: spilo-base-temp:latest # For local tagging within buildx
+      FINAL_IMAGE_NAME: ${{ github.repository }} # Renamed for clarity from IMAGE_NAME
+      # This is the name of the Spilo base image that `build.yml` pushes
+      SPILO_BASE_REGISTRY_IMAGE_NAME: ${{ github.repository_owner }}/spilo-base-pg17
 
     steps:
-      - name: Checkout code
+      - name: Checkout code (at release tag)
         uses: actions/checkout@v4
         with:
-          submodules: true
+          # No need for submodules here if we are NOT rebuilding the base from source
+          # We only need the Dockerfile and context for the final image.
+          # However, if your Dockerfile context *does* require submodule files for some other reason, keep submodules: true.
+          # For simplicity, let's assume it's not strictly needed for the *final* build if base is pre-built.
+          # submodules: true 
           ref: ${{ needs.release-please.outputs.tag_name }}
 
       - name: Get commit SHA for the release tag
         id: get_sha
+        # This determines the SHA that `build.yml` would have used to tag the base image
         run: echo "RELEASE_COMMIT_SHA=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
       - name: Set up QEMU
@@ -67,27 +74,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Build the Spilo base specifically for this release
-      - name: Build and Cache Spilo Base Image (Intermediate for Release)
-        uses: docker/build-push-action@v6
-        with:
-          context: ./spilo-upstream/postgres-appliance
-          file: ./spilo-upstream/postgres-appliance/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: false
-          tags: ${{ env.TEMP_SPILO_BASE_TAG }} # Use the locally defined temp tag
-          build-args: |
-            PGVERSION=17
-            DEB_PG_SUPPORTED_VERSIONS=17
-          # Cache this release-specific base build
-          outputs: type=cacheonly,dest=spilo-base-release-cache-${{ needs.release-please.outputs.tag_name }}
-          cache-from: type=cacheonly,src=spilo-base-release-cache-${{ needs.release-please.outputs.tag_name }}
+      # <<< NO Spilo base image build step here >>>
+      # We will use the one pushed by build.yml, tagged with the release commit SHA
 
       - name: Extract metadata for Final Release Image
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ env.FINAL_IMAGE_NAME }}
           tags: |
             type=semver,pattern={{version}},value=${{ needs.release-please.outputs.tag_name }}
             type=semver,pattern={{major}}.{{minor}},value=${{ needs.release-please.outputs.tag_name }}
@@ -103,14 +97,10 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Your Dockerfile uses SPILO_BASE_IMAGE_TAG build-arg.
-          # For release, we tell it to use the TEMP_SPILO_BASE_TAG which was just built.
-          build-args: |
-            SPILO_BASE_IMAGE_TAG=${{ env.TEMP_SPILO_BASE_TAG }}
-          # Utilize the cached intermediate base image
-          cache-from: |
-            type=cacheonly,src=spilo-base-release-cache-${{ needs.release-please.outputs.tag_name }}
-            type=gha
+          build-args: | # Tell your Dockerfile to use the Spilo base image pushed by build.yml
+            SPILO_BASE_IMAGE_TAG=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:sha-${{ steps.get_sha.outputs.RELEASE_COMMIT_SHA }}
+          # Caching for the vchord layer is still good
+          cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Create image tags list for release asset

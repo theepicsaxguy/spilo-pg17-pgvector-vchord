@@ -1,21 +1,29 @@
 # .github/workflows/build.yml
-name: Build Docker Image
+name: Build Docker Image (PR & Main Push)
 
 on:
   push:
     branches:
       - main
+    paths: # Only trigger on relevant changes for 'main' pushes
+      - 'spilo-upstream/**'
+      - 'Dockerfile'
+      - '.github/workflows/build.yml'
+      - '.github/workflows/release-please.yml' # If release process might affect base build
+      - '.github/workflows/update-upstream.yml'
   pull_request:
-    branches:
-      - main
+    paths: # Always build for PRs if relevant files change
+      - 'spilo-upstream/**'
+      - 'Dockerfile'
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
-  # Tag for the Spilo base image we'll push
-  SPILO_BASE_IMAGE_NAME: ${{ github.repository_owner }}/spilo-base-pg17 # Or just spilo-base if PG version is fixed
-  # Temporary local tag for buildx context, not strictly needed if we always push/pull the base
-  TEMP_SPILO_BASE_TAG: spilo-base-temp:latest
+  # Your final image name
+  FINAL_IMAGE_NAME: ${{ github.repository }}
+  # Name for the intermediate Spilo base image pushed to registry
+  SPILO_BASE_REGISTRY_IMAGE_NAME: ${{ github.repository_owner }}/spilo-base-pg17 # e.g., theepicsaxguy/spilo-base-pg17
+  # Local tag for buildx context during the two-stage build within this job
+  TEMP_SPILO_BASE_LOCAL_TAG: spilo-base-temp-local:latest
 
 permissions:
   contents: read
@@ -23,14 +31,18 @@ permissions:
   security-events: write
 
 jobs:
-  build_and_push_base_and_final: # Renamed job for clarity
+  build_and_push:
+    name: Build and Push Development Images
     runs-on: ubuntu-latest
     steps:
+      - name: Record Start Time
+        run: echo "BUILD_START_TIME=$(date +%s)" >> $GITHUB_ENV
+
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          submodules: true
-          fetch-depth: 0
+          submodules: recursive # Changed from true, recursive is more robust
+          fetch-depth: 0 # Needed for reliable submodule state and potential diffs if used
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -45,14 +57,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Determine Base Image Tag
-        id: base_image_tag
+      - name: Determine Tags for Pushed Base Image
+        id: base_tags
         run: |
+          # For PRs, tag with pr-number. For main, tag with sha.
+          # This pushed base image is what release-please can reuse.
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            echo "TAG=pr-${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
-          else # push to main (could be direct or from update-upstream merge)
-            echo "TAG=sha-${{ github.sha }}" >> $GITHUB_OUTPUT
+            echo "PUSH_TAG=pr-${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          else # push to main
+            echo "PUSH_TAG=sha-${{ github.sha }}" >> $GITHUB_OUTPUT
           fi
+          # Common cache tag for the registry cache, can be 'latest' or branch-specific
+          echo "CACHE_TAG=latest" >> $GITHUB_OUTPUT # Or branch-${{ github.ref_name }}
 
       # Step 1: Build AND PUSH Spilo Base Image from Source
       - name: Build and Push Spilo Base Image (Intermediate)
@@ -61,28 +77,30 @@ jobs:
           context: ./spilo-upstream/postgres-appliance
           file: ./spilo-upstream/postgres-appliance/Dockerfile
           platforms: linux/amd64,linux/arm64
-          push: true # Push this base image
-          tags: ${{ env.REGISTRY }}/${{ env.SPILO_BASE_IMAGE_NAME }}:${{ steps.base_image_tag.outputs.TAG }}
+          push: true # Always push this base image for PRs and main pushes
+          tags: | # Tags for the pushed intermediate base image
+            ${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.base_tags.outputs.PUSH_TAG }}
           build-args: |
             PGVERSION=17
             DEB_PG_SUPPORTED_VERSIONS=17
-          # Cache this build too, for faster rebuilds of the base itself if submodule changes
-          cache-from: type=gha,scope=${{ env.SPILO_BASE_IMAGE_NAME }}-${{ github.ref_name }}
-          cache-to: type=gha,mode=max,scope=${{ env.SPILO_BASE_IMAGE_NAME }}-${{ github.ref_name }}
+          cache-from: |
+            type=gha,scope=spilo-base-${{ github.ref_name }}
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.base_tags.outputs.CACHE_TAG }}
+          cache-to: |
+            type=gha,mode=max,scope=spilo-base-${{ github.ref_name }}
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.base_tags.outputs.CACHE_TAG }},mode=max
 
       - name: Extract metadata for Final Image
-        id: meta
+        id: final_meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          # We use the pushed base image tag for consistency in metadata if needed
-          # For the final image, tags are specific to this event
+          images: ${{ env.REGISTRY }}/${{ env.FINAL_IMAGE_NAME }}
           tags: |
             type=raw,value=pr-${{ github.event.pull_request.number }},enable=${{ github.event_name == 'pull_request' }}
             type=sha,enable=${{ github.event_name == 'pull_request' }}
             type=sha,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
-      # Step 2: Build and Push Final Docker Image using the PUSHED base
+      # Step 2: Build and Push Final Docker Image using the PUSHED Spilo base
       - name: Build and Push Final Docker Image (with vchord)
         uses: docker/build-push-action@v6
         with:
@@ -90,11 +108,16 @@ jobs:
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          # Build argument to pass the exact base image tag to your Dockerfile
-          build-args: |
-            SPILO_BASE_IMAGE_TAG=${{ env.REGISTRY }}/${{ env.SPILO_BASE_IMAGE_NAME }}:${{ steps.base_image_tag.outputs.TAG }}
-          # Cache the final image layers
-          cache-from: type=gha
+          tags: ${{ steps.final_meta.outputs.tags }}
+          labels: ${{ steps.final_meta.outputs.labels }}
+          build-args: | # Tell your Dockerfile to use the base image we just pushed
+            SPILO_BASE_IMAGE_TAG=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.base_tags.outputs.PUSH_TAG }}
+          cache-from: type=gha # GHA cache for the final image layers
           cache-to: type=gha,mode=max
+
+      - name: Record End Time and Duration
+        if: always() # Run even if previous steps fail to see how long it took
+        run: |
+          BUILD_END_TIME=$(date +%s)
+          DURATION=$((BUILD_END_TIME - BUILD_START_TIME))
+          echo "Total build and push duration: ${DURATION} seconds."
