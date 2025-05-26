@@ -58,12 +58,11 @@ jobs:
         run: |
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             echo "PUSH_TAG=pr-${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
-          else # push to main
+          else
             echo "PUSH_TAG=sha-${{ github.sha }}" >> $GITHUB_OUTPUT
           fi
           echo "CACHE_TAG=latest" >> $GITHUB_OUTPUT
 
-      # Step 1: Build AND PUSH Spilo Base Image from Source
       - name: Build and Push Spilo Base Image (Intermediate)
         uses: docker/build-push-action@v6
         with:
@@ -74,14 +73,14 @@ jobs:
           tags: ${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.base_tags.outputs.PUSH_TAG }}
           build-args: |
             PGVERSION=17
-            DEB_PG_SUPPORTED_VERSIONS=17 # Corrected from "17" to 17 for build-arg
+            DEB_PG_SUPPORTED_VERSIONS=17
           cache-from: |
-            type=gha,scope=${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}-${{ github.ref_name }} # Corrected variable
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.base_tags.outputs.CACHE_TAG }} # Corrected variable and step ID
+            type=gha,scope=${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}-${{ github.ref_name }}
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.base_tags.outputs.CACHE_TAG }}
             type=registry,ref=ghcr.io/zalando/spilo-17:4.0-p2
           cache-to: |
-            type=gha,mode=max,scope=${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}-${{ github.ref_name }} # Corrected variable
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.base_tags.outputs.CACHE_TAG }},mode=max # Corrected variable and step ID
+            type=gha,mode=max,scope=${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}-${{ github.ref_name }}
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.base_tags.outputs.CACHE_TAG }},mode=max
 
       - name: Extract metadata for Final Image
         id: final_meta
@@ -112,8 +111,6 @@ jobs:
         if: always()
         run: |
           BUILD_END_TIME=$(date +%s)
-          # Ensure BUILD_START_TIME was actually set if the job started but first step failed
-          # However, GITHUB_ENV variables persist for the job.
           if [[ -n "${{ env.BUILD_START_TIME }}" ]]; then
             DURATION=$((BUILD_END_TIME - BUILD_START_TIME))
             echo "Total build and push duration: ${DURATION} seconds."

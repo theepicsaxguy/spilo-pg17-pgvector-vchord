@@ -41,7 +41,7 @@ jobs:
     if: ${{ needs.release-please.outputs.release_created }}
     env:
       REGISTRY: ghcr.io
-      FINAL_IMAGE_NAME: ${{ github.repository }} # Renamed for clarity from IMAGE_NAME
+      FINAL_IMAGE_NAME: ${{ github.repository }}
       # This is the name of the Spilo base image that `build.yml` pushes
       SPILO_BASE_REGISTRY_IMAGE_NAME: ${{ github.repository_owner }}/spilo-base-pg17
 
@@ -97,9 +97,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: | # Tell your Dockerfile to use the Spilo base image pushed by build.yml
+          build-args: | 
             SPILO_BASE_IMAGE_TAG=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:sha-${{ steps.get_sha.outputs.RELEASE_COMMIT_SHA }}
-          # Caching for the vchord layer is still good
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
