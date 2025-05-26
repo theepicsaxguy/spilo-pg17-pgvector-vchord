@@ -65,9 +65,9 @@ jobs:
           tags: ${{ env.REGISTRY }}/${{ env.SPILO_BASE_IMAGE_NAME }}:${{ steps.base_image_tag.outputs.TAG }}
           build-args: |
             PGVERSION=17
-            PGOLDVERSIONS=""
+            DEB_PG_SUPPORTED_VERSIONS="17" # <--- CORRECTED LINE
           # Cache this build too, for faster rebuilds of the base itself if submodule changes
-          cache-from: type=gha,scope=${{ env.SPILO_BASE_IMAGE_NAME }}-${{ github.ref_name }} # Scope cache by branch/PR
+          cache-from: type=gha,scope=${{ env.SPILO_BASE_IMAGE_NAME }}-${{ github.ref_name }}
           cache-to: type=gha,mode=max,scope=${{ env.SPILO_BASE_IMAGE_NAME }}-${{ github.ref_name }}
 
       - name: Extract metadata for Final Image

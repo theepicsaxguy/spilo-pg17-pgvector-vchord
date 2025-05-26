@@ -14,7 +14,7 @@ echo "--- Step 1: Building Spilo base image from submodule (${SPILO_SUBMODULE_PA
 git -C "${PROJECT_ROOT}" submodule update --init --recursive --remote
 docker build \
   --build-arg PGVERSION=17 \
-  --build-arg PGOLDVERSIONS="" \
+  --build-arg DEB_PG_SUPPORTED_VERSIONS="17" \ 
   -t "${TEMP_BASE_TAG}" \
   "${SPILO_SUBMODULE_PATH}"
 
