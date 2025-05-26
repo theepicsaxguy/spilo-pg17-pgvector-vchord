@@ -1,7 +1,11 @@
-# theepicsaxguy-spilo-pg17-pgvector-vchord/Dockerfile
-# This base image will be built LOCALLY by the GitHub Action workflows
-# from the spilo-upstream submodule. It won't be pushed to a registry.
-FROM spilo-base-temp:latest
+# Declare the build argument that will specify the base image tag.
+# This ARG must be declared *before* the FROM line that uses it.
+ARG SPILO_BASE_IMAGE_TAG="ghcr.io/zalando/spilo-17:4.0-p2" # Default for local builds or if not provided by CI
+
+# Use the build argument in the FROM instruction.
+FROM ${SPILO_BASE_IMAGE_TAG}
+
+# Declare other build arguments needed for this stage.
 ARG VCHORD_VERSION=0.4.1
 ARG TARGETARCH
 
