@@ -1,7 +1,7 @@
 # Declare the build argument that will specify the base image tag.
 # This ARG must be declared *before* the FROM line that uses it.
-ARG SPILO_BASE_IMAGE_TAG="ghcr.io/zalando/spilo-17:4.0-p2" # Default for local builds or if not provided by CI
-
+#ARG SPILO_BASE_IMAGE_TAG="ghcr.io/zalando/spilo-17:4.0-p2" # Default for local builds or if not provided by CI
+ARG SPILO_BASE_IMAGE_TAG="ghcr.io/theepicsaxguy/spilo-pg17-pgvector-vchord:base"
 # Use the build argument in the FROM instruction.
 FROM ${SPILO_BASE_IMAGE_TAG}
 
