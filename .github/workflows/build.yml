@@ -27,12 +27,93 @@ permissions:
   security-events: write
 
 jobs:
-  build_and_push:
-    name: Build and Push Development Images
+  analyze_changes:
+    name: Analyze What Changed
     runs-on: ubuntu-latest
+    outputs:
+      base_rebuild_needed: ${{ steps.check_changes.outputs.base_rebuild_needed }}
+      existing_base_tag: ${{ steps.check_changes.outputs.existing_base_tag }}
+      base_changed: ${{ steps.check_changes.outputs.base_changed }}
+      final_changed: ${{ steps.check_changes.outputs.final_changed }}
     steps:
-      - name: Record Start Time
-        run: echo "BUILD_START_TIME=$(date +%s)" >> $GITHUB_ENV
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Analyze Changes and Determine Build Strategy
+        id: check_changes
+        run: |
+          echo "=== Analyzing Changes ==="
+          
+          # Check what files changed
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          else
+            # For push to main, compare with previous commit
+            BASE_SHA="${{ github.event.before }}"
+            HEAD_SHA="${{ github.sha }}"
+          fi
+          
+          echo "Comparing ${BASE_SHA}..${HEAD_SHA}"
+          
+          # Check if spilo-upstream directory changed
+          BASE_CHANGED="false"
+          FINAL_CHANGED="false"
+          
+          if git diff --name-only ${BASE_SHA}..${HEAD_SHA} | grep -E '^spilo-upstream/' > /dev/null; then
+            echo "📦 Spilo upstream changes detected"
+            BASE_CHANGED="true"
+          fi
+          
+          if git diff --name-only ${BASE_SHA}..${HEAD_SHA} | grep -E '^(Dockerfile|(?!spilo-upstream/).*)$' > /dev/null; then
+            echo "🏗️  Final image changes detected"
+            FINAL_CHANGED="true"
+          fi
+          
+          # Get the commit that last changed spilo-upstream
+          LAST_BASE_COMMIT=$(git log -1 --format="%H" -- spilo-upstream/)
+          echo "Last commit that changed spilo-upstream: ${LAST_BASE_COMMIT}"
+          
+          # Check if we already have a base image for that commit
+          BASE_IMAGE_TAG="sha-${LAST_BASE_COMMIT}"
+          
+          if docker manifest inspect ${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${BASE_IMAGE_TAG} > /dev/null 2>&1; then
+            echo "✅ Found existing base image: ${BASE_IMAGE_TAG}"
+            echo "base_rebuild_needed=false" >> $GITHUB_OUTPUT
+            echo "existing_base_tag=${BASE_IMAGE_TAG}" >> $GITHUB_OUTPUT
+          else
+            echo "🔄 Base image rebuild needed: ${BASE_IMAGE_TAG}"
+            echo "base_rebuild_needed=true" >> $GITHUB_OUTPUT
+            echo "existing_base_tag=" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "base_changed=${BASE_CHANGED}" >> $GITHUB_OUTPUT
+          echo "final_changed=${FINAL_CHANGED}" >> $GITHUB_OUTPUT
+          
+          echo "=== Analysis Complete ==="
+          echo "Base rebuild needed: $([ "${{ github.event_name }}" == "push" ] && echo "true" || echo "${BASE_CHANGED}")"
+          echo "Final build needed: ${FINAL_CHANGED}"
+
+  build_base:
+    name: Build Spilo Base Image
+    runs-on: ubuntu-latest
+    needs: analyze_changes
+    if: needs.analyze_changes.outputs.base_rebuild_needed == 'true'
+    outputs:
+      base_image_tag: ${{ steps.base_tags.outputs.PUSH_TAG }}
+    steps:
+      - name: Record Build Start Time
+        run: echo "BASE_BUILD_START_TIME=$(date +%s)" >> $GITHUB_ENV
 
       - name: Checkout code
         uses: actions/checkout@v4
@@ -53,34 +134,111 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Determine Tags for Pushed Base Image
+      - name: Determine Tags for Base Image
         id: base_tags
         run: |
+          LAST_BASE_COMMIT=$(git log -1 --format="%H" -- spilo-upstream/)
+          
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             echo "PUSH_TAG=pr-${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+            echo "ADDITIONAL_TAGS=sha-${LAST_BASE_COMMIT}" >> $GITHUB_OUTPUT
           else
             echo "PUSH_TAG=sha-${{ github.sha }}" >> $GITHUB_OUTPUT
+            echo "ADDITIONAL_TAGS=sha-${LAST_BASE_COMMIT},latest,release-candidate" >> $GITHUB_OUTPUT
           fi
+          
           echo "CACHE_TAG=latest" >> $GITHUB_OUTPUT
+          echo "Using base commit: ${LAST_BASE_COMMIT}"
 
-      - name: Build and Push Spilo Base Image (Intermediate)
+      - name: Build and Push Spilo Base Image
         uses: docker/build-push-action@v6
         with:
           context: ./spilo-upstream/postgres-appliance
           file: ./spilo-upstream/postgres-appliance/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.base_tags.outputs.PUSH_TAG }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.base_tags.outputs.PUSH_TAG }}
+            ${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.base_tags.outputs.ADDITIONAL_TAGS }}
           build-args: |
             PGVERSION=17
             DEB_PG_SUPPORTED_VERSIONS=17
           cache-from: |
             type=gha,scope=${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}-${{ github.ref_name }}
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.base_tags.outputs.CACHE_TAG }}
+            type=gha,scope=${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}-main
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:latest
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:cache
             type=registry,ref=ghcr.io/zalando/spilo-17:4.0-p2
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:sha-${{ github.event.before }}
           cache-to: |
             type=gha,mode=max,scope=${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}-${{ github.ref_name }}
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.base_tags.outputs.CACHE_TAG }},mode=max
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:cache,mode=max
+
+      - name: Record Base Build Duration
+        if: always()
+        run: |
+          BASE_BUILD_END_TIME=$(date +%s)
+          if [[ -n "${{ env.BASE_BUILD_START_TIME }}" ]]; then
+            DURATION=$((BASE_BUILD_END_TIME - BASE_BUILD_START_TIME))
+            echo "📊 Base image build duration: ${DURATION} seconds"
+            echo "BASE_BUILD_DURATION=${DURATION}" >> $GITHUB_ENV
+          fi
+
+  build_final:
+    name: Build Final Image
+    runs-on: ubuntu-latest
+    needs: [analyze_changes, build_base]
+    if: always() && (needs.analyze_changes.outputs.final_changed == 'true' || needs.analyze_changes.outputs.base_changed == 'true')
+    steps:
+      - name: Record Final Build Start Time
+        run: echo "FINAL_BUILD_START_TIME=$(date +%s)" >> $GITHUB_ENV
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1  # Shallow since we're not building base
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine Base Image to Use
+        id: determine_base
+        run: |
+          if [[ "${{ needs.build_base.result }}" == "success" ]]; then
+            # Use the freshly built base image
+            BASE_TAG="${{ needs.build_base.outputs.base_image_tag }}"
+            echo "🆕 Using newly built base image: ${BASE_TAG}"
+          elif [[ -n "${{ needs.analyze_changes.outputs.existing_base_tag }}" ]]; then
+            # Use existing base image
+            BASE_TAG="${{ needs.analyze_changes.outputs.existing_base_tag }}"
+            echo "♻️  Using existing base image: ${BASE_TAG}"
+          else
+            echo "❌ No suitable base image found!"
+            exit 1
+          fi
+          
+          echo "BASE_IMAGE_TAG=${BASE_TAG}" >> $GITHUB_OUTPUT
+          echo "Final base image: ${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${BASE_TAG}"
+
+      - name: Verify Base Image Exists
+        run: |
+          echo "🔍 Verifying base image exists..."
+          if ! docker manifest inspect ${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.determine_base.outputs.BASE_IMAGE_TAG }} > /dev/null 2>&1; then
+            echo "❌ Base image verification failed!"
+            echo "Expected: ${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.determine_base.outputs.BASE_IMAGE_TAG }}"
+            exit 1
+          fi
+          echo "✅ Base image verified successfully"
 
       - name: Extract metadata for Final Image
         id: final_meta
@@ -91,29 +249,59 @@ jobs:
             type=raw,value=pr-${{ github.event.pull_request.number }},enable=${{ github.event_name == 'pull_request' }}
             type=sha,enable=${{ github.event_name == 'pull_request' }}
             type=sha,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
-      # Step 2: Build and Push Final Docker Image using the PUSHED Spilo base
-      - name: Build and Push Final Docker Image (with vchord)
+      - name: Build and Push Final Docker Image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+          push: true
           tags: ${{ steps.final_meta.outputs.tags }}
           labels: ${{ steps.final_meta.outputs.labels }}
           build-args: |
-            SPILO_BASE_IMAGE_TAG=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.base_tags.outputs.PUSH_TAG }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            SPILO_BASE_IMAGE_TAG=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ steps.determine_base.outputs.BASE_IMAGE_TAG }}
+          cache-from: |
+            type=gha,scope=${{ env.FINAL_IMAGE_NAME }}-${{ github.ref_name }}
+            type=gha,scope=${{ env.FINAL_IMAGE_NAME }}-main
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.FINAL_IMAGE_NAME }}:latest
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.FINAL_IMAGE_NAME }}:cache
+          cache-to: |
+            type=gha,mode=max,scope=${{ env.FINAL_IMAGE_NAME }}-${{ github.ref_name }}
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.FINAL_IMAGE_NAME }}:cache,mode=max
 
-      - name: Record End Time and Duration
+      - name: Record Final Build Duration
         if: always()
         run: |
-          BUILD_END_TIME=$(date +%s)
-          if [[ -n "${{ env.BUILD_START_TIME }}" ]]; then
-            DURATION=$((BUILD_END_TIME - BUILD_START_TIME))
-            echo "Total build and push duration: ${DURATION} seconds."
+          FINAL_BUILD_END_TIME=$(date +%s)
+          if [[ -n "${{ env.FINAL_BUILD_START_TIME }}" ]]; then
+            DURATION=$((FINAL_BUILD_END_TIME - FINAL_BUILD_START_TIME))
+            echo "📊 Final image build duration: ${DURATION} seconds"
+          fi
+
+  build_summary:
+    name: Build Summary
+    runs-on: ubuntu-latest
+    needs: [analyze_changes, build_base, build_final]
+    if: always()
+    steps:
+      - name: Generate Build Summary
+        run: |
+          echo "# 🏗️ Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Changes Detected" >> $GITHUB_STEP_SUMMARY
+          echo "- **Base (spilo-upstream)**: ${{ needs.analyze_changes.outputs.base_changed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Final (application)**: ${{ needs.analyze_changes.outputs.final_changed }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Build Results" >> $GITHUB_STEP_SUMMARY
+          echo "- **Base rebuild needed**: ${{ needs.analyze_changes.outputs.base_rebuild_needed }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Base build**: ${{ needs.build_base.result || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Final build**: ${{ needs.build_final.result || 'skipped' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ "${{ needs.build_base.result }}" == "success" ]]; then
+            echo "✅ **Time saved by smart rebuilding**: ~15-18 minutes" >> $GITHUB_STEP_SUMMARY
           else
-            echo "BUILD_START_TIME was not set. Cannot calculate duration."
+            echo "⚡ **Time saved by reusing base**: ~18-20 minutes" >> $GITHUB_STEP_SUMMARY
           fi
