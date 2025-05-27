@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.1 (2025-05-27)
+
+## What's Changed
+* fix: included pg_cron by @theepicsaxguy in https://github.com/theepicsaxguy/spilo-pg17-pgvector-vchord/pull/30
+
+
+**Full Changelog**: https://github.com/theepicsaxguy/spilo-pg17-pgvector-vchord/compare/v1.2.0...v1.2.1
+
 ## 1.2.0 (2025-05-27)
 
 ## What's Changed
