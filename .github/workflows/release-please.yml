@@ -1,4 +1,3 @@
-# .github/workflows/release-please.yml
 name: release-please
 
 on:
@@ -30,101 +29,17 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
 
-  prepare_release_build:
-    name: Prepare Release Build Strategy
+  build_release:
+    name: Build Release Images
     runs-on: ubuntu-latest
     needs: release-please
-    if: ${{ needs.release-please.outputs.release_created }}
-    outputs:
-      base_image_strategy: ${{ steps.analyze.outputs.base_image_strategy }}
-      base_image_tag: ${{ steps.analyze.outputs.base_image_tag }}
-      release_commit_sha: ${{ steps.analyze.outputs.release_commit_sha }}
-      base_rebuild_needed: ${{ steps.analyze.outputs.base_rebuild_needed }}
+    if: needs.release-please.outputs.release_created
     env:
       REGISTRY: ghcr.io
-      SPILO_BASE_REGISTRY_IMAGE_NAME: ${{ github.repository_owner }}/spilo-base-pg17
+      BASE_IMAGE_NAME: ${{ github.repository_owner }}/spilo-base-pg17
+      FINAL_IMAGE_NAME: ${{ github.repository }}
     steps:
-      - name: Checkout code (at release tag)
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 0
-          ref: ${{ needs.release-please.outputs.tag_name }}
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Analyze Release Build Requirements
-        id: analyze
-        run: |
-          RELEASE_COMMIT_SHA=$(git rev-parse HEAD)
-          echo "Release commit SHA: ${RELEASE_COMMIT_SHA}"
-          echo "release_commit_sha=${RELEASE_COMMIT_SHA}" >> $GITHUB_OUTPUT
-          
-          # Strategy 1: Try exact SHA match (from build.yml)
-          EXACT_SHA_TAG="sha-${RELEASE_COMMIT_SHA}"
-          
-          # Strategy 2: Try release-candidate tag (from build.yml main branch)
-          RELEASE_CANDIDATE_TAG="release-candidate"
-          
-          # Strategy 3: Try base commit SHA (most likely to exist)
-          LAST_BASE_COMMIT=$(git log -1 --format="%H" -- spilo-upstream/)
-          BASE_COMMIT_TAG="sha-${LAST_BASE_COMMIT}"
-          
-          echo "🔍 Checking for existing base images..."
-          echo "Strategy 1 - Exact SHA: ${EXACT_SHA_TAG}"
-          echo "Strategy 2 - Release candidate: ${RELEASE_CANDIDATE_TAG}"  
-          echo "Strategy 3 - Base commit SHA: ${BASE_COMMIT_TAG}"
-          
-          # Check each strategy in order of preference
-          if docker manifest inspect ${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${EXACT_SHA_TAG} > /dev/null 2>&1; then
-            echo "✅ Strategy 1 SUCCESS - Using exact SHA match"
-            echo "base_image_strategy=exact-sha" >> $GITHUB_OUTPUT
-            echo "base_image_tag=${EXACT_SHA_TAG}" >> $GITHUB_OUTPUT
-            echo "base_rebuild_needed=false" >> $GITHUB_OUTPUT
-            
-          elif docker manifest inspect ${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${RELEASE_CANDIDATE_TAG} > /dev/null 2>&1; then
-            echo "✅ Strategy 2 SUCCESS - Using release candidate"
-            echo "base_image_strategy=release-candidate" >> $GITHUB_OUTPUT
-            echo "base_image_tag=${RELEASE_CANDIDATE_TAG}" >> $GITHUB_OUTPUT
-            echo "base_rebuild_needed=false" >> $GITHUB_OUTPUT
-            
-          elif docker manifest inspect ${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${BASE_COMMIT_TAG} > /dev/null 2>&1; then
-            echo "✅ Strategy 3 SUCCESS - Using base commit SHA"
-            echo "base_image_strategy=base-commit-sha" >> $GITHUB_OUTPUT
-            echo "base_image_tag=${BASE_COMMIT_TAG}" >> $GITHUB_OUTPUT
-            echo "base_rebuild_needed=false" >> $GITHUB_OUTPUT
-            
-          else
-            echo "❌ No existing base image found - rebuild required"
-            echo "This should not happen if build.yml is working correctly!"
-            echo "base_image_strategy=rebuild-required" >> $GITHUB_OUTPUT
-            echo "base_image_tag=sha-${RELEASE_COMMIT_SHA}" >> $GITHUB_OUTPUT
-            echo "base_rebuild_needed=true" >> $GITHUB_OUTPUT
-          fi
-          
-          echo "🎯 Selected strategy: $(cat $GITHUB_OUTPUT | grep base_image_strategy | cut -d'=' -f2)"
-
-  build_base_for_release:
-    name: Build Base Image for Release
-    runs-on: ubuntu-latest
-    needs: [release-please, prepare_release_build]
-    if: needs.prepare_release_build.outputs.base_rebuild_needed == 'true'
-    env:
-      REGISTRY: ghcr.io
-      SPILO_BASE_REGISTRY_IMAGE_NAME: ${{ github.repository_owner }}/spilo-base-pg17
-    steps:
-      - name: Record Emergency Base Build Start
-        run: |
-          echo "⚠️  EMERGENCY: Building base image for release"
-          echo "This should rarely happen - investigate build.yml"
-          echo "EMERGENCY_BASE_BUILD_START_TIME=$(date +%s)" >> $GITHUB_ENV
-
-      - name: Checkout code (at release tag)
+      - name: Checkout code
         uses: actions/checkout@v4
         with:
           submodules: recursive
@@ -144,7 +59,40 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Emergency Build Base Image
+      - name: Check for existing base image
+        id: base_check
+        run: |
+          COMMIT_SHA=$(git rev-parse HEAD)
+          LAST_BASE_COMMIT=$(git log -1 --format="%H" -- spilo-upstream/)
+          
+          # Try multiple tag patterns that build.yml creates
+          CANDIDATE_TAGS=(
+            "sha-${COMMIT_SHA}"           # If this commit changed spilo-upstream
+            "sha-${LAST_BASE_COMMIT}"     # Most likely - last commit that changed spilo-upstream
+            "release-candidate"           # From main branch builds
+            "latest"                      # Fallback
+          )
+          
+          FOUND_TAG=""
+          for tag in "${CANDIDATE_TAGS[@]}"; do
+            if docker manifest inspect ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:${tag} > /dev/null 2>&1; then
+              echo "Found existing base image: ${tag}"
+              FOUND_TAG="${tag}"
+              break
+            fi
+          done
+          
+          if [[ -n "${FOUND_TAG}" ]]; then
+            echo "base_tag=${FOUND_TAG}" >> $GITHUB_OUTPUT
+            echo "build_base=false" >> $GITHUB_OUTPUT
+          else
+            echo "No base image found, will build: sha-${COMMIT_SHA}"
+            echo "base_tag=sha-${COMMIT_SHA}" >> $GITHUB_OUTPUT
+            echo "build_base=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build base image
+        if: steps.base_check.outputs.build_base == 'true'
         uses: docker/build-push-action@v6
         with:
           context: ./spilo-upstream/postgres-appliance
@@ -152,88 +100,18 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ needs.prepare_release_build.outputs.base_image_tag }}
-            ${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ needs.release-please.outputs.tag_name }}-base
+            ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:${{ steps.base_check.outputs.base_tag }}
+            ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:${{ needs.release-please.outputs.tag_name }}-base
           build-args: |
             PGVERSION=17
             DEB_PG_SUPPORTED_VERSIONS=17
           cache-from: |
-            type=gha,scope=${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}-main
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:latest
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:cache
-            type=registry,ref=ghcr.io/zalando/spilo-17:4.0-p2
+            type=gha,scope=${{ env.BASE_IMAGE_NAME }}-main
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:latest
           cache-to: |
-            type=gha,mode=max,scope=${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}-emergency
+            type=gha,mode=max,scope=${{ env.BASE_IMAGE_NAME }}-release
 
-      - name: Record Emergency Build Duration
-        if: always()
-        run: |
-          if [[ -n "${{ env.EMERGENCY_BASE_BUILD_START_TIME }}" ]]; then
-            DURATION=$(( $(date +%s) - EMERGENCY_BASE_BUILD_START_TIME ))
-            echo "⚠️  Emergency base build took: ${DURATION} seconds"
-            echo "🔧 Consider investigating why build.yml didn't provide the base image"
-          fi
-
-  build_and_push_release:
-    name: Build and Push Release Image
-    runs-on: ubuntu-latest
-    needs: [release-please, prepare_release_build, build_base_for_release]
-    if: always() && needs.release-please.outputs.release_created
-    env:
-      REGISTRY: ghcr.io
-      FINAL_IMAGE_NAME: ${{ github.repository }}
-      SPILO_BASE_REGISTRY_IMAGE_NAME: ${{ github.repository_owner }}/spilo-base-pg17
-
-    steps:
-      - name: Record Release Build Start Time
-        run: echo "RELEASE_BUILD_START_TIME=$(date +%s)" >> $GITHUB_ENV
-
-      - name: Checkout code (at release tag)  
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
-          fetch-depth: 1
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Final Base Image Verification
-        run: |
-          BASE_IMAGE_REF="${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ needs.prepare_release_build.outputs.base_image_tag }}"
-          
-          echo "🔍 Final verification of base image: ${BASE_IMAGE_REF}"
-          
-          if ! docker manifest inspect "${BASE_IMAGE_REF}" > /dev/null 2>&1; then
-            echo "❌ CRITICAL: Base image verification failed!"
-            echo "Expected base image: ${BASE_IMAGE_REF}"
-            echo "Strategy used: ${{ needs.prepare_release_build.outputs.base_image_strategy }}"
-            echo "Build base job result: ${{ needs.build_base_for_release.result }}"
-            exit 1
-          fi
-          
-          echo "✅ Base image verified successfully"
-          echo "📋 Using strategy: ${{ needs.prepare_release_build.outputs.base_image_strategy }}"
-
-      # Tag the base image with release version for permanent reference
-      - name: Tag Base Image with Release Version
-        run: |
-          BASE_SOURCE="${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ needs.prepare_release_build.outputs.base_image_tag }}"
-          BASE_RELEASE_TAG="${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ needs.release-please.outputs.tag_name }}"
-          
-          echo "🏷️  Tagging base image for release traceability"
-          docker buildx imagetools create --tag "${BASE_RELEASE_TAG}" "${BASE_SOURCE}"
-
-      - name: Extract metadata for Final Release Image
+      - name: Extract metadata for final image
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -244,7 +122,7 @@ jobs:
             type=semver,pattern={{major}},value=${{ needs.release-please.outputs.tag_name }}
             type=raw,value=latest
 
-      - name: Build and Push Final Release Docker Image
+      - name: Build and push final image
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -254,31 +132,15 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: | 
-            SPILO_BASE_IMAGE_TAG=${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ needs.prepare_release_build.outputs.base_image_tag }}
+            SPILO_BASE_IMAGE_TAG=${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:${{ steps.base_check.outputs.base_tag }}
           cache-from: |
             type=gha,scope=${{ env.FINAL_IMAGE_NAME }}-main
             type=registry,ref=${{ env.REGISTRY }}/${{ env.FINAL_IMAGE_NAME }}:latest
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.FINAL_IMAGE_NAME }}:cache
           cache-to: |
             type=gha,mode=max,scope=${{ env.FINAL_IMAGE_NAME }}-release
 
-      - name: Create Comprehensive Release Documentation
+      - name: Create release summary
         run: |
-          echo "# 🚀 Release Build Report" > release-build-report.md
-          echo "" >> release-build-report.md
-          echo "**Release Version:** \`${{ needs.release-please.outputs.tag_name }}\`" >> release-build-report.md
-          echo "**Release Commit:** \`${{ needs.prepare_release_build.outputs.release_commit_sha }}\`" >> release-build-report.md
-          echo "**Build Date:** \`$(date -u +%Y-%m-%dT%H:%M:%SZ)\`" >> release-build-report.md
-          echo "" >> release-build-report.md
-          echo "## 🏗️ Build Strategy" >> release-build-report.md
-          echo "**Base Image Strategy:** \`${{ needs.prepare_release_build.outputs.base_image_strategy }}\`" >> release-build-report.md
-          echo "**Base Image Tag:** \`${{ needs.prepare_release_build.outputs.base_image_tag }}\`" >> release-build-report.md
-          echo "**Base Rebuild Required:** \`${{ needs.prepare_release_build.outputs.base_rebuild_needed }}\`" >> release-build-report.md
-          echo "" >> release-build-report.md
-          echo "## 📦 Images Published" >> release-build-report.md
-          echo "### Base Images" >> release-build-report.md
-          echo "- \`${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ needs.prepare_release_build.outputs.base_image_tag }}\` (source)" >> release-build-report.md
-          echo "- \`${{ env.REGISTRY }}/${{ env.SPILO_BASE_REGISTRY_IMAGE_NAME }}:${{ needs.release-please.outputs.tag_name }}\` (release-tagged)" >> release-build-report.md
-          echo "" >> release-build-report.md
-          echo "### Final Images" >> release-build-report.md
-          echo "${{ steps.meta.outputs.tags }}" |
+          echo "Release ${{ needs.release-please.outputs.tag_name }} built successfully" >> $GITHUB_STEP_SUMMARY
+          echo "Base image: ${{ steps.base_check.outputs.base_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "Base image built: ${{ steps.base_check.outputs.build_base }}" >> $GITHUB_STEP_SUMMARY
