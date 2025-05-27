@@ -27,4 +27,4 @@ RUN set -eux; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-ENV SHARED_PRELOAD_LIBRARIES="bg_mon,pg_stat_statements,pgextwlist,pg_auth_mon,set_user,vector,vchord"
+ENV SHARED_PRELOAD_LIBRARIES="bg_mon,pg_stat_statements,pgextwlist,pg_auth_mon,set_user,vector,vchord,cron"
