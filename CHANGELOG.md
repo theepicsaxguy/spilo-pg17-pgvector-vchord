@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.2 (2025-05-28)
+
+## What's Changed
+* fix: simplify image by @theepicsaxguy in https://github.com/theepicsaxguy/spilo-pg17-pgvector-vchord/pull/33
+
+
+**Full Changelog**: https://github.com/theepicsaxguy/spilo-pg17-pgvector-vchord/compare/v1.2.1...v1.2.2
+
 ## 1.2.1 (2025-05-27)
 
 ## What's Changed
